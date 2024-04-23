@@ -1,0 +1,2 @@
+bootloader/bootblock: bootloader/bootasm.S kernel/asm.h \
+ kernel/memlayout.h kernel/mmu.h
