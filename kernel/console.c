@@ -122,11 +122,13 @@ panic(char *s)
 		;
 }
 
-#define BACKSPACE 	 0x100
-#define CRTPORT 	 0x3d4
-#define MAGIC        0xD9
+#define BACKSPACE 		 0x100
+#define CRTPORT 		 0x3d4
+#define MAGIC_UP	     0xD8
+#define MAGIC_DN	     0xD9
 static ushort *crt = (ushort*)P2V(0xb8000);  // CGA memory
 
+int ZELENO = 0;
 static void
 cgaputc(int c)
 {
@@ -142,10 +144,9 @@ cgaputc(int c)
 		pos += 80 - pos%80;
 	else if(c == BACKSPACE){
 		if(pos > 0) --pos;
-	} else if (c == MAGIC) { // handle magic
-		c = 'a';
-		crt[pos++] = (c&0xff) | 0x0700;
-	}else
+	} else if(ZELENO){
+		crt[pos++] = (c&0xff) | 0x0200;
+	} else
 		crt[pos++] = (c&0xff) | 0x0700;  // black on white
 
 	if(pos < 0 || pos > 25*80)
@@ -180,6 +181,7 @@ consputc(int c)
 	cgaputc(c);
 }
 
+
 #define INPUT_BUF 128
 struct {
 	char buf[INPUT_BUF];
@@ -189,6 +191,46 @@ struct {
 } input;
 
 #define C(x)  ((x)-'@')  // Control-x
+
+struct {
+	char buf[4][INPUT_BUF];
+	uint write;
+	uint curr;
+	uint start;
+} history;
+
+void
+cursor_back(void){
+	int pos;
+
+	outb(CRTPORT, 14);
+	pos = inb(CRTPORT+1) << 8;
+	outb(CRTPORT, 15);
+	pos |= inb(CRTPORT+1);
+
+	if (pos > 0) pos--;
+
+	outb(CRTPORT, 14);
+	outb(CRTPORT+1, pos>>8);
+	outb(CRTPORT, 15);
+	outb(CRTPORT+1, pos);
+	crt[pos] = ' ' | 0x0700;
+}
+
+void
+unfill(void){
+	while(input.e > input.w){
+		input.e--;
+		cursor_back();
+	}
+}
+
+void
+putc(int c){
+	ZELENO = 1;
+	consputc(c);
+	ZELENO = 0;
+}
 
 void
 consoleintr(int (*getc)(void))
@@ -215,12 +257,57 @@ consoleintr(int (*getc)(void))
 				consputc(BACKSPACE);
 			}
 			break;
+		case MAGIC_UP:
+			if (history.start != history.write) {
+				if (history.curr != history.start) {
+					history.curr = (history.curr - 1 ) % 4;
+					unfill();
+					for (int i=0; i<strlen(history.buf[history.curr]); i++) {
+						c = history.buf[history.curr][i];
+						putc(c);
+						input.buf[input.e++] = c;
+					}
+				}
+			}
+			break;
+		case MAGIC_DN:
+			if (history.curr != history.write){
+				history.curr = (history.curr + 1) % 4;
+				unfill();
+				for (int i=0; i<strlen(history.buf[history.curr]); i++) {
+					c = history.buf[history.curr][i];
+					putc(c);
+					input.buf[input.e++] = c;
+				}
+			}
+			break;
 		default:
 			if(c != 0 && input.e-input.r < INPUT_BUF){
 				c = (c == '\r') ? '\n' : c;
 				input.buf[input.e++ % INPUT_BUF] = c;
 				consputc(c);
 				if(c == '\n' || c == C('D') || input.e == input.r+INPUT_BUF){
+
+
+					// MY PART START//
+					if (input.w != input.e-1) {
+						uint tmp = input.w;
+						uint i = 0;
+						while (tmp < input.e-1) {
+							history.buf[history.write][i++] = input.buf[tmp % INPUT_BUF];
+							tmp++;
+						}
+
+						history.write = (history.write + 1) % 4;
+
+						if (history.write == history.start){
+							history.start = (history.start + 1) % 4;
+							memset(history.buf[history.write], '\0', sizeof(history.buf[history.write]));
+						}
+						history.curr = history.write;
+					}
+					// MY PART FIN //
+
 					input.w = input.e;
 					wakeup(&input.r);
 				}
